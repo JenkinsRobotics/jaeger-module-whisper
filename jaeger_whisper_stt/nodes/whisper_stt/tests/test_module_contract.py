@@ -83,7 +83,11 @@ def test_module_yaml_validates() -> None:
     doc = yaml.safe_load((_MODULE_DIR / "module.yaml").read_text())
     assert doc["module"] == "whisper_stt"
     assert doc["slot"] == "stt"
-    assert doc["version"] == "1.0.0"
+    # 2.0.0: the topic rename is a breaking contract change, and
+    # module.yaml's own rule calls for a MAJOR bump on one. Anything
+    # pinning 1.x targets the flat namespace and will not find these
+    # topics.
+    assert doc["version"] == "2.0.0"
     # Was [] until the audio driver existed — which was a lie by
     # omission: this module consumed audio constantly, just not from a
     # topic, so the manifest could not see it.
