@@ -1,8 +1,8 @@
 """Audio session node.
 
 Owns the realtime voice-input session and publishes semantic bus events:
-finalized transcripts on ``/sense/transcript`` and low-latency speech
-start on ``/sense/user_speech_start``.
+finalized transcripts on ``/sense/stt/transcript`` and low-latency speech
+start on ``/sense/stt/speech_start``.
 
 The node deliberately keeps mic frames, AEC, VAD, and STT buffering
 inside one in-process realtime subsystem.
@@ -73,7 +73,7 @@ class AudioSessionNode(Node):
         self.session.start()
         self._log(
             "audio session started; will publish "
-            f"{topics.SENSE_TRANSCRIPT} + {topics.SENSE_USER_SPEECH_START}"
+            f"{topics.SENSE_STT_TRANSCRIPT} + {topics.SENSE_STT_SPEECH_START}"
         )
 
     def tick(self) -> None:

@@ -1,8 +1,26 @@
 module: whisper_stt
 slot: stt
 version: 1.0.0
+
+# The OWNERSHIP axis (TAXONOMY.md "Module KINDS") — orthogonal to
+# `slot`. `engine` is the kind that fills a capability slot; swapping
+# in Vosk or a cloud STT means swapping this module.
+#
+# KNOWN DEVIATION: this engine opens the microphone itself, and the
+# taxonomy's driver rule says nothing outside a driver-kind module may
+# open a device. The clean shape is a mic driver publishing
+# /sense/mic/pcm with this module consuming it — which would also let a
+# second consumer (a VAD, a recorder) share the mic instead of fighting
+# for it. Not restructured here; recorded so the deviation is visible
+# rather than implied by an empty `consumes`.
+kind: engine
+
+# Topics follow the hierarchy: /<category>/<class>/<message>. Both
+# outputs are derived readings — they flow toward the brain, so they
+# are /sense/ regardless of having come out of a model rather than off
+# a wire.
 consumes: []
-produces: [/sense/transcript, /sense/user_speech_start]
+produces: [/sense/stt/transcript, /sense/stt/speech_start]
 tools: [listen]
 factory: jaeger_whisper_stt.nodes.whisper_stt:make_audio_session_node
 config: whisper_stt        # its group/key in the settings catalog

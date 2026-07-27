@@ -85,7 +85,7 @@ def test_module_yaml_validates() -> None:
     assert doc["slot"] == "stt"
     assert doc["version"] == "1.0.0"
     assert doc["consumes"] == []
-    assert doc["produces"] == ["/sense/transcript", "/sense/user_speech_start"]
+    assert doc["produces"] == ["/sense/stt/transcript", "/sense/stt/speech_start"]
     assert doc["tools"] == ["listen"]
     assert doc["factory"] == "jaeger_whisper_stt.nodes.whisper_stt:make_audio_session_node"
     assert doc["config"] == "whisper_stt"
@@ -113,7 +113,7 @@ def test_node_builds_on_an_inproc_bus_with_a_fake_adapter() -> None:
 def test_transcript_round_trip_with_a_fake_adapter() -> None:
     """The node's bus contract, independent of ``make_audio_session_node``'s
     real engine: an adapter-committed phrase becomes a
-    ``/sense/transcript`` publish."""
+    ``/sense/stt/transcript`` publish."""
     bus = InProcBus()
     adapter = _FakeAdapter()
     node = AudioSessionNode(
@@ -135,9 +135,9 @@ def test_transcript_round_trip_with_a_fake_adapter() -> None:
             received.append(msg)
             event.set()
 
-        bus.subscribe(topics.SENSE_TRANSCRIPT, _on_transcript)
+        bus.subscribe(topics.SENSE_STT_TRANSCRIPT, _on_transcript)
         adapter.feed_phrase("module contract smoke")
-        assert event.wait(timeout=2.0), "no /sense/transcript published"
+        assert event.wait(timeout=2.0), "no /sense/stt/transcript published"
         assert received[0].text == "module contract smoke"
     finally:
         node.stop()

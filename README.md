@@ -38,7 +38,7 @@ consumers today: the JaegerAI product and JP01's non-AI console.
 - **whisper.cpp backend** — via `pywhispercpp`, the same native engine
   that accelerates on Apple Silicon (Metal) without any Python-side
   GPU code.
-- **Bus contract** — `/sense/transcript` + `/sense/user_speech_start`
+- **Bus contract** — `/sense/stt/transcript` + `/sense/stt/speech_start`
   out, the `listen` tool, no inbound topics. Declared once, in
   `module.yaml` — nowhere else.
 
