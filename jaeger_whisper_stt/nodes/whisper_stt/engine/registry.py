@@ -17,15 +17,20 @@ from typing import Any, Callable
 class Method:
     name: str
     desc: str
-    # (config, aec, reference_buffer, wake_phrases) -> live STTAdapter
+    # (config, bus, wake_phrases) -> live STTAdapter
     make: Callable[..., Any]
     # (audio, sr, ref=None) -> BenchResult
     bench: Callable[..., Any]
     available: bool = True
 
 
-# ── live-adapter factories (mirror the kwargs core/audio/session.py used) ──
-def _make_two_pass(config, aec, reference_buffer, wake_phrases):
+# ── live-adapter factories (mirror the kwargs core/audio/session.py uses) ──
+#
+# `aec` and `reference_buffer` used to be threaded through here to reach
+# the mic. Both are gone: jaeger_os.nodes.audio_io owns the device and
+# the canceller, and publishes cleaned frames. What a pipeline needs now
+# is the one thing that actually carries audio — the bus.
+def _make_two_pass(config, bus, wake_phrases):
     from .two_pass import WhisperSTTTwoPass
     return WhisperSTTTwoPass(
         fast_model_name=config.fast_model_name,
@@ -33,24 +38,22 @@ def _make_two_pass(config, aec, reference_buffer, wake_phrases):
         require_wake_word=config.require_wake_word,
         wake_phrases=wake_phrases,
         followup_window_s=config.followup_window_s,
-        aec=aec, far_end_buffer=reference_buffer,
-        audio_backend=config.audio_backend,
+        bus=bus,
     )
 
 
-def _make_continuous(config, aec, reference_buffer, wake_phrases):
+def _make_continuous(config, bus, wake_phrases):
     from .continuous import WhisperSTTContinuous
     return WhisperSTTContinuous(
         model_name=config.fast_model_name,
         require_wake_word=config.require_wake_word,
         wake_phrases=wake_phrases,
         followup_window_s=config.followup_window_s,
-        aec=aec, far_end_buffer=reference_buffer,
-        audio_backend=config.audio_backend,
+        bus=bus,
     )
 
 
-def _make_local_agreement(config, aec, reference_buffer, wake_phrases):
+def _make_local_agreement(config, bus, wake_phrases):
     from .local_agreement import WhisperSTTLocalAgreement
     return WhisperSTTLocalAgreement()  # raises NotImplementedError (stub)
 

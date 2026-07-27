@@ -1,7 +1,7 @@
 """Shared helpers used by both two_pass.py and continuous.py.
 
 Plugin-internal — not exported through __init__.py. Both STT modes need:
-  • _MicStream            — sounddevice InputStream + pauseable queue
+  • _MicStream            — mic frames off the bus, pauseable queue
   • _warm_stt             — silence-pass priming so first phrase isn't slow
   • _normalize            — lowercase + strip punctuation for wake-word match
   • _find_wake_in_text    — substring + fuzzy wake-phrase matcher
@@ -11,9 +11,16 @@ Plugin-internal — not exported through __init__.py. Both STT modes need:
 `_VadWorker` is two-pass specific (energy-segmentation in continuous mode
 replaces it), so it stays in two_pass.py.
 
-AEC integration is OPTIONAL: if a caller passes an `aec` instance and a
-`far_end_buffer` to `_MicStream`, near-end audio is filtered before being
-queued. If no AEC is wired, mic frames pass through unchanged.
+THIS MODULE NO LONGER OPENS THE MICROPHONE. `jaeger_os.nodes.audio_io`
+owns the device and publishes echo-cancelled frames on /sense/mic/pcm;
+`_MicStream` below subscribes. That is what lets a wake-word detector or
+a level meter have the same microphone at the same time — under the old
+shape this module held the input stream and nothing else could get it.
+
+AEC moved with the device. It needs the mic frame and the audio being
+played TOGETHER per frame, so it belongs where both are native; keeping
+it here would have meant shipping the far-end reference across a
+boundary 100 times a second.
 """
 
 from __future__ import annotations
@@ -24,6 +31,8 @@ import sys
 import time
 from difflib import SequenceMatcher
 from typing import Any
+
+import threading
 
 import numpy as np
 
@@ -118,115 +127,62 @@ def _warm_stt(model, label: str, sample_rate: int) -> None:
         print(f"[{label}] primed ({time.perf_counter() - t0:.1f}s).", flush=True)
 
 
+#: How long to wait for the first mic frame before warning that
+#: nothing is publishing. Long enough that a slow driver boot does not
+#: cry wolf, short enough that an operator sees it before giving up.
+LIVENESS_TIMEOUT_S = 3.0
+
+
 class _MicStream:
-    """sounddevice InputStream + queue + pause flag.
+    """Mic frames off the bus, with the queue+pause shape the pipelines
+    already expect.
 
-    Optional AEC hook: if `aec` (object with `process(near, far)` method) and
-    `far_end_buffer` (object with `pop_frame()` method) are passed in, each
-    captured frame is filtered against the far-end reference before being
-    queued. This is what makes barge-in possible — the mic stays open during
-    TTS playback but the AI's own voice gets canceled out.
+    Deliberately keeps `_MicStream`'s interface — `.q`, `.start()`,
+    `.stop()`, `.set_paused()`, `.paused` — because the two pipelines
+    are written against it and the change worth making here is WHERE
+    the audio comes from, not how the VAD reads it.
 
-    If aec is None, frames pass through unchanged. Callers that don't want
-    barge-in can use `set_paused(True)` during TTS instead.
+    PAUSE IS LOCAL NOW. It used to stop the device. A shared microphone
+    cannot honour that: one consumer pausing would starve every other
+    subscriber. So a paused stream drops frames on arrival instead. The
+    observable effect for this pipeline is identical, and the device
+    keeps serving everyone else.
     """
 
     def __init__(
         self,
         *,
+        bus: Any,
         sample_rate: int,
         frame_samples: int,
         max_queue_frames: int = 200,
-        device: Any = None,
-        aec: Any = None,
-        far_end_buffer: Any = None,
-        audio_backend: str = "avaudio",
-        voice_processing: bool | None = None,
     ) -> None:
+        self.bus = bus
         self.sample_rate = sample_rate
         self.frame_samples = frame_samples
         self.q: queue.Queue[np.ndarray] = queue.Queue(maxsize=max_queue_frames)
         self.paused = False
-        self.aec = aec
-        self.far_end_buffer = far_end_buffer
-        self.audio_backend = audio_backend
+        self._subscribed = False
+        self._frames_seen = 0
+        self._liveness: threading.Timer | None = None
 
-        # 0.3.0: prefer AVAudioEngine via the avaudio_io bridge — kills
-        # the PortAudio wedging bug class on macOS.  Falls back to
-        # sounddevice transparently when the bridge can't load (non-
-        # macOS, missing pyobjc-framework-AVFoundation, etc.) or when
-        # the operator explicitly asks for the portaudio path via
-        # ``--audio-backend portaudio``.
-        if audio_backend == "avaudio":
-            # Resolve the voice_processing default:
-            #   • Operator-supplied value wins, always (None → auto).
-            #   • Speexdsp AEC wired → voice_processing OFF so the
-            #     operator's pipeline sees raw samples.  Stacking two
-            #     AECs would double-cancel + add latency.
-            #   • Otherwise → voice_processing ON.  Apple's pre-canned
-            #     pipeline (AEC + NS + AGC) is what FaceTime uses, runs
-            #     for free on macOS, and was validated in
-            #     dev/tools/audio_smoke/voice_assistant_avaudio.py
-            #     as the fix for agent-
-            #     hears-itself when the mic stays open during TTS.
-            #     Mic-pause mode also benefits (NS + AGC improve
-            #     Whisper accuracy in noisy rooms).
-            if voice_processing is None:
-                voice_processing = aec is None
-            try:
-                from jaeger_os.core.audio.avaudio_io import InputStream as _AVInputStream
-                self._stream = _AVInputStream(
-                    samplerate=sample_rate,
-                    channels=1,
-                    dtype="float32",
-                    blocksize=frame_samples,
-                    callback=self._cb,
-                    voice_processing=voice_processing,
-                )
-                if voice_processing:
-                    print("[mic] avaudio voice_processing=on "
-                          "(Apple-native AEC + NS + AGC)",
-                          flush=True)
-                return
-            except Exception as exc:  # noqa: BLE001
-                print(f"[mic] avaudio backend unavailable ({exc}); "
-                      "falling back to sounddevice", file=sys.stderr, flush=True)
-
-        import sounddevice as sd  # deferred — plugin owns the import
-        self._stream = sd.InputStream(
-            device=device,
-            samplerate=sample_rate,
-            channels=1,
-            dtype="float32",
-            blocksize=frame_samples,
-            callback=self._cb,
-        )
-
-    def _apply_aec(self, near: np.ndarray) -> np.ndarray:
-        """Run AEC on a captured frame if AEC + far-end buffer are wired."""
-        if self.aec is None or self.far_end_buffer is None:
-            return near
-        far = self.far_end_buffer.pop_frame(len(near))
-        try:
-            return self.aec.process(near, far)
-        except Exception as exc:
-            print(f"[mic] AEC passthrough on error: {exc}", file=sys.stderr, flush=True)
-            return near
-
-    def _cb(self, indata, frames, time_info, status) -> None:
-        if status:
-            print(f"[mic] {status}", file=sys.stderr)
-        if self.paused or frames != self.frame_samples:
+    def _on_frame(self, msg: Any) -> None:
+        self._frames_seen += 1
+        if self.paused:
             return
-        sample = indata.copy()
-        if self.aec is not None:
-            # AEC is per-channel mono; reshape to 1D, process, reshape back.
-            mono = sample[:, 0]
-            clean = self._apply_aec(mono)
-            sample = clean.reshape(-1, 1)
+        samples = np.frombuffer(msg.samples, dtype=np.float32)
+        if samples.size != self.frame_samples:
+            # A driver configured at a different frame size is a wiring
+            # error, not something to silently resample around.
+            print(f"[mic] ignoring {samples.size}-sample frame "
+                  f"(expected {self.frame_samples})", file=sys.stderr)
+            return
+        sample = samples.reshape(-1, 1)
         try:
             self.q.put_nowait(sample)
         except queue.Full:
+            # Newest wins: a backed-up VAD should work on recent audio,
+            # not grind through a backlog from seconds ago.
             try:
                 self.q.get_nowait()
             except queue.Empty:
@@ -237,13 +193,48 @@ class _MicStream:
                 pass
 
     def start(self) -> None:
-        self._stream.start()
+        if self._subscribed:
+            return
+        from jaeger_os.transport import topics
+        self.bus.subscribe(topics.SENSE_MIC_PCM, self._on_frame)
+        self._subscribed = True
+        self._arm_liveness_check(topics.SENSE_MIC_PCM)
+
+    def _arm_liveness_check(self, topic: str) -> None:
+        """Say something if no audio ever arrives.
+
+        This is the failure mode the driver split introduced, and it is
+        the nastiest kind: subscribing to a topic nobody publishes
+        SUCCEEDS. Without this the symptom is an agent that never hears
+        you, reports healthy, and logs nothing — strictly worse than
+        the ``OSError`` you used to get from a missing device.
+        """
+        def _check() -> None:
+            if self._frames_seen:
+                return
+            print(
+                f"[mic] no audio on {topic} after {LIVENESS_TIMEOUT_S:.0f}s. "
+                f"Nothing is publishing it — is the audio_io driver in "
+                f"this app's node list? Subscribing to an unpublished "
+                f"topic succeeds silently, so this warning is the only "
+                f"symptom you get.",
+                file=sys.stderr, flush=True)
+
+        self._liveness = threading.Timer(LIVENESS_TIMEOUT_S, _check)
+        self._liveness.daemon = True
+        self._liveness.start()
 
     def stop(self) -> None:
+        if self._liveness is not None:
+            self._liveness.cancel()
+            self._liveness = None
+        if not self._subscribed:
+            return
+        from jaeger_os.transport import topics
         try:
-            self._stream.stop()
+            self.bus.unsubscribe(topics.SENSE_MIC_PCM, self._on_frame)
         finally:
-            self._stream.close()
+            self._subscribed = False
 
     def drain(self) -> None:
         with self.q.mutex:

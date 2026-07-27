@@ -84,7 +84,10 @@ def test_module_yaml_validates() -> None:
     assert doc["module"] == "whisper_stt"
     assert doc["slot"] == "stt"
     assert doc["version"] == "1.0.0"
-    assert doc["consumes"] == []
+    # Was [] until the audio driver existed — which was a lie by
+    # omission: this module consumed audio constantly, just not from a
+    # topic, so the manifest could not see it.
+    assert doc["consumes"] == ["/sense/mic/pcm"]
     assert doc["produces"] == ["/sense/stt/transcript", "/sense/stt/speech_start"]
     assert doc["tools"] == ["listen"]
     assert doc["factory"] == "jaeger_whisper_stt.nodes.whisper_stt:make_audio_session_node"

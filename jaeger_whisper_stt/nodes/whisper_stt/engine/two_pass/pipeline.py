@@ -252,11 +252,7 @@ class WhisperSTTTwoPass:
         short_phrase_max_ms: int = 1500,
         short_phrase_hangover_ms: int = 350,
         mic_queue_max_frames: int = 200,
-        input_device: Any = None,
-        aec: Any = None,
-        far_end_buffer: Any = None,
-        audio_backend: str = "sounddevice",
-        voice_processing: bool | None = None,
+        bus: Any = None,
     ) -> None:
         from pywhispercpp.model import Model as STTModel
 
@@ -289,10 +285,7 @@ class WhisperSTTTwoPass:
 
         self.mic = _MicStream(
             sample_rate=sample_rate, frame_samples=frame_samples,
-            max_queue_frames=mic_queue_max_frames, device=input_device,
-            aec=aec, far_end_buffer=far_end_buffer,
-            audio_backend=audio_backend,
-            voice_processing=voice_processing,
+            max_queue_frames=mic_queue_max_frames, bus=bus,
         )
         self._phrase_q: queue.Queue[tuple[np.ndarray, str, float]] = queue.Queue()
         self._stop = threading.Event()

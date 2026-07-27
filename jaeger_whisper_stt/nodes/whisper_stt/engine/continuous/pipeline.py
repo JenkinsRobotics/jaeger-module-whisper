@@ -25,9 +25,14 @@ Wake-word handling:
     only the remainder (after the wake) is returned. `open_followup`
     opens a brief window where the wake phrase is not required.
 
-Optional AEC integration: pass `aec` + `far_end_buffer` to the constructor
-to enable echo cancellation on captured mic frames. Without it, callers
-should use `set_paused(True)` during TTS playback.
+AEC is NOT here any more — jaeger_os.nodes.audio_io owns it, because the
+canceller needs the mic frame and the playing audio together per frame.
+This pipeline receives already-cleaned audio.
+
+`set_paused(True)` still exists and still suppresses this pipeline's
+input during playback — but it is now LOCAL. It drops arriving frames
+rather than stopping the device, because a shared microphone cannot let
+one consumer starve the others.
 """
 
 from __future__ import annotations
@@ -85,11 +90,7 @@ class WhisperSTTContinuous:
         post_padding_ms: int = 250,
         duplicate_similarity: float = 0.92,
         mic_queue_max_frames: int = 200,
-        input_device: Any = None,
-        aec: Any = None,
-        far_end_buffer: Any = None,
-        audio_backend: str = "sounddevice",
-        voice_processing: bool | None = None,
+        bus: Any = None,
     ) -> None:
         from pywhispercpp.model import Model as STTModel
 
@@ -122,10 +123,7 @@ class WhisperSTTContinuous:
 
         self.mic = _MicStream(
             sample_rate=sample_rate, frame_samples=self._frame_samples,
-            max_queue_frames=mic_queue_max_frames, device=input_device,
-            aec=aec, far_end_buffer=far_end_buffer,
-            audio_backend=audio_backend,
-            voice_processing=voice_processing,
+            max_queue_frames=mic_queue_max_frames, bus=bus,
         )
 
         self._stop = threading.Event()
