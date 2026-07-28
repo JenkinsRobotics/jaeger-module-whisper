@@ -165,24 +165,53 @@ class _MicStream:
         self._subscribed = False
         self._frames_seen = 0
         self._liveness: threading.Timer | None = None
+        #: Leftover samples between bus frames — see _on_frame.
+        self._carry: np.ndarray = np.empty(0, dtype=np.float32)
+        self._warned_rate = False
 
     def _on_frame(self, msg: Any) -> None:
         self._frames_seen += 1
         if self.paused:
             return
-        samples = np.frombuffer(msg.samples, dtype=np.float32)
-        if samples.size != self.frame_samples:
-            # A driver configured at a different frame size is a wiring
-            # error, not something to silently resample around.
-            print(f"[mic] ignoring {samples.size}-sample frame "
-                  f"(expected {self.frame_samples})", file=sys.stderr)
+        # SAMPLE RATE is a real wiring error — correcting it means
+        # resampling, a DSP decision this class must not make silently.
+        rate = getattr(msg, "sample_rate", self.sample_rate)
+        if rate != self.sample_rate:
+            if not self._warned_rate:      # once, not 100x a second
+                print(f"[mic] ignoring {rate} Hz audio (this pipeline is "
+                      f"{self.sample_rate} Hz) — fix the driver's rate or "
+                      f"the engine's sample_rate", file=sys.stderr)
+                self._warned_rate = True
             return
-        sample = samples.reshape(-1, 1)
+
+        # FRAME SIZE is not. This used to drop any frame that was not
+        # exactly frame_samples, which made the module deaf against a
+        # perfectly good driver: jaeger_os's audio_io publishes 10 ms
+        # frames because speexdsp's AEC requires fixed equal-length
+        # near/far frames, while this pipeline's VAD wants 30 ms. Both
+        # defaults are right for their own reasons, and neither side
+        # can be declared the wiring error.
+        #
+        # So REGROUP instead of refusing. Buffering is lossless and
+        # costs a copy — unlike resampling, which is why the original
+        # refusal was correct about rate and wrong about size. Works in
+        # both directions: 3 small frames in -> 1 block out, or 1 large
+        # frame in -> several blocks out.
+        samples = np.frombuffer(msg.samples, dtype=np.float32)
+        self._carry = (samples if self._carry.size == 0
+                       else np.concatenate((self._carry, samples)))
+        n = self.frame_samples
+        while self._carry.size >= n:
+            self._offer(self._carry[:n].reshape(-1, 1))
+            self._carry = self._carry[n:]
+
+    def _offer(self, sample: np.ndarray) -> None:
+        """Queue one VAD-sized block. Newest wins: a backed-up VAD
+        should work on recent audio, not grind through a backlog from
+        seconds ago."""
         try:
             self.q.put_nowait(sample)
         except queue.Full:
-            # Newest wins: a backed-up VAD should work on recent audio,
-            # not grind through a backlog from seconds ago.
             try:
                 self.q.get_nowait()
             except queue.Empty:

@@ -190,3 +190,74 @@ def test_stop_unsubscribes(bus):
     _publish(bus)
     time.sleep(0.3)
     assert mic.q.empty(), "still receiving audio after stop()"
+
+
+# ── frame-size regrouping ────────────────────────────────────────
+#
+# The bug these pin: jaeger_os's audio_io publishes 10 ms frames (160
+# samples — speexdsp's AEC needs fixed equal-length near/far frames)
+# while the continuous pipeline's VAD wants 30 ms (480). _MicStream
+# used to DROP every frame that was not an exact match, so the mic
+# meter moved, the driver was healthy, and the STT heard nothing.
+
+def test_small_frames_are_regrouped_not_dropped(bus):
+    """3x160 in -> exactly one 480 block out. Nothing lost."""
+    mic = _MicStream(bus=bus, sample_rate=16000, frame_samples=480)
+    mic.start()
+    try:
+        for _ in range(3):
+            _publish(bus, value=0.25, n=160)
+        assert _wait(lambda: mic.q.qsize() >= 1), "regrouping never fired"
+        block = mic.q.get_nowait()
+        assert block.shape == (480, 1)
+        assert np.allclose(block, 0.25)      # the audio itself survives
+        assert mic.q.empty()                 # and no partial block leaks
+    finally:
+        mic.stop()
+
+
+def test_large_frames_split_into_blocks(bus):
+    """The other direction: 1x960 in -> 2x480 out."""
+    mic = _MicStream(bus=bus, sample_rate=16000, frame_samples=480)
+    mic.start()
+    try:
+        _publish(bus, value=0.5, n=960)
+        assert _wait(lambda: mic.q.qsize() >= 2)
+        assert mic.q.get_nowait().shape == (480, 1)
+        assert mic.q.get_nowait().shape == (480, 1)
+    finally:
+        mic.stop()
+
+
+def test_a_remainder_is_carried_not_discarded(bus):
+    """500 samples = one block plus 20 carried. The next frame
+    completes it — dropping the tail would clip every utterance."""
+    mic = _MicStream(bus=bus, sample_rate=16000, frame_samples=480)
+    mic.start()
+    try:
+        _publish(bus, value=0.5, n=500)
+        assert _wait(lambda: mic.q.qsize() >= 1)
+        mic.q.get_nowait()
+        _publish(bus, value=0.5, n=460)      # 20 carried + 460 = 480
+        assert _wait(lambda: mic.q.qsize() >= 1), "the remainder was dropped"
+    finally:
+        mic.stop()
+
+
+def test_a_rate_mismatch_is_still_refused(bus, capfd):
+    """Regrouping fixes SIZE. Rate needs resampling, which this class
+    must not do silently — that stays a loud wiring error."""
+    mic = _MicStream(bus=bus, sample_rate=16000, frame_samples=480)
+    mic.start()
+    try:
+        for _ in range(4):
+            bus.publish(topics.AudioInFrame(
+                samples=np.zeros(480, dtype=np.float32).tobytes(),
+                sample_rate=48000, channels=1))
+        time.sleep(0.2)
+        assert mic.q.empty()
+        err = capfd.readouterr().err
+        assert "48000" in err
+        assert err.count("ignoring") == 1     # once, not per frame
+    finally:
+        mic.stop()
