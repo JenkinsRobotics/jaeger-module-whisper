@@ -88,6 +88,13 @@ jobs:
         # claims its slot.
         run: |
           pip install build
+          # `rm -rf` is a no-op on a fresh checkout and the entire point
+          # when anyone runs this step locally: setuptools reuses build/
+          # and egg-info/SOURCES.txt, and a SOURCES.txt written under old
+          # packaging rules keeps shipping what those rules included.
+          # Measured on the sibling TTS module: same commit, same config,
+          # 34 wheel members with a stale egg-info vs 16 without.
+          rm -rf build dist dist-check ./*.egg-info
           python -m build --wheel --outdir dist-check .
           python - <<'PY'
           import glob, zipfile
