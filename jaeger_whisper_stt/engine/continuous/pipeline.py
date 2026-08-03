@@ -48,6 +48,7 @@ import numpy as np
 
 from .._base import (
     DEFAULT_WAKE_PHRASES,
+    WakeMissNotifier,
     log,
     _MicStream,
     _find_wake_in_text,
@@ -58,7 +59,7 @@ from .._base import (
 )
 
 
-class WhisperSTTContinuous:
+class WhisperSTTContinuous(WakeMissNotifier):
     """Energy-segmented continuous STT. Public API matches WhisperSTTTwoPass."""
 
     label = "stt-cont"
@@ -448,7 +449,7 @@ class WhisperSTTContinuous:
         # an operator debugging "the mic isn't responding" sees what
         # it heard.  Verbose-gated now — the voice-activity log in
         # the TUI is the operator's normal view.
-        log("stt", f"mic heard {text!r} — not sent", level="debug")
+        self._notify_wake_miss(text)
 
     # ── Public phrase pump ─────────────────────────────────────────────
     def next_phrase(self, timeout: float | None = 1.0) -> str | None:

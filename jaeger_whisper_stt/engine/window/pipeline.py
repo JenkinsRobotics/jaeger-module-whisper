@@ -61,6 +61,7 @@ import numpy as np
 
 from .._base import (
     DEFAULT_WAKE_PHRASES,
+    WakeMissNotifier,
     log,
     _MicStream,
     _find_wake_in_text,
@@ -157,7 +158,7 @@ def agreed_prefix_len(a: list[str], b: list[str]) -> int:
     return n
 
 
-class WhisperSTTWindow:
+class WhisperSTTWindow(WakeMissNotifier):
     """Rolling-window STT.  Public API matches WhisperSTTTwoPass, plus
     ``set_on_partial`` for live (``is_final=False``) text."""
 
@@ -545,7 +546,7 @@ class WhisperSTTWindow:
             if offer_latest(self._committed_q, remainder):
                 self._output_drops += 1
             return
-        log("stt", f"mic heard {text!r} — not sent", level="debug")
+        self._notify_wake_miss(text)
 
     # ── Public phrase pump ─────────────────────────────────────────────
     def next_phrase(self, timeout: float | None = 1.0) -> str | None:

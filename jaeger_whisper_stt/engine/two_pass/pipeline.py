@@ -31,6 +31,7 @@ import numpy as np
 
 from .._base import (
     DEFAULT_WAKE_PHRASES,
+    WakeMissNotifier,
     log,
     _MicStream,
     _find_wake_in_text,
@@ -236,7 +237,7 @@ class _VadWorker(threading.Thread):
                 pre_roll.clear()
 
 
-class WhisperSTTTwoPass:
+class WhisperSTTTwoPass(WakeMissNotifier):
     """Two-pass STT — fast model gates, accurate model commits.
 
     `next_phrase(timeout)` returns the next committed user utterance (str)
@@ -514,7 +515,7 @@ class WhisperSTTTwoPass:
                     # so the user sees what the mic heard AND knows it
                     # wasn't sent.  Verbose-gated now — the TUI's
                     # voice-activity log is the normal operator view.
-                    log("stt", f"mic heard {fast_text!r} — not sent", level="debug")
+                    self._notify_wake_miss(fast_text)
                     continue
                 # Wake matched — the trigger utterance lands in the log.
                 log("stt", f"heard {fast_text!r}", level="debug")

@@ -109,6 +109,48 @@ def segments_text(result) -> str:
     return " ".join(s.text.strip() for s in result if s.text.strip()).strip()
 
 
+class WakeMissNotifier:
+    """Report speech that was transcribed but carried no wake phrase.
+
+    This is the single most common reason a wake-gated engine appears
+    dead: it heard you perfectly and dropped the phrase because the wake
+    word was missing. Until now the only trace was a debug log line, so
+    an app could not tell "nothing was said" from "you weren't addressed"
+    — the two look identical on the bus, because neither produces a
+    message.
+
+    The engine deliberately does NOT publish this itself. Every topic
+    this module produces is published by ``AudioSessionNode``; a second
+    publisher on ``/sys/gate/decision`` would mean two places to look
+    when the voice-activity log is wrong. So the engine hands the text
+    over and the node decides what it becomes — the same shape as
+    ``set_on_partial`` and ``set_on_speech_detected``.
+    """
+
+    #: Class-level default so subclasses need no __init__ cooperation.
+    _on_wake_miss = None
+
+    def set_on_wake_miss(self, callback) -> None:
+        """Install a callback taking the heard text. ``None`` clears it."""
+        self._on_wake_miss = callback
+
+    def _notify_wake_miss(self, text: str) -> None:
+        """Log it, then hand it to whoever is listening.
+
+        Runs on the decode thread, so a slow or throwing listener would
+        stall recognition — hence the guard. A broken voice-activity log
+        must never cost you the microphone.
+        """
+        log("stt", f"mic heard {text!r} — not sent", level="debug")
+        callback = self._on_wake_miss
+        if callback is None:
+            return
+        try:
+            callback(text)
+        except Exception:  # noqa: BLE001 — a listener never kills decode
+            pass
+
+
 def offer_latest(target: queue.Queue, item: Any) -> bool:
     """Put ``item`` without blocking; evict the oldest item if full.
 

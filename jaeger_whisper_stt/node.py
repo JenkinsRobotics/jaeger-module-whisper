@@ -78,6 +78,7 @@ class AudioSessionNode(Node):
             # without the gate-decision API — skip silently.
             pass
         self._wire_partials()
+        self._wire_wake_miss()
         self.session.start()
         self._log(
             "audio session started; will publish "
@@ -161,6 +162,46 @@ class AudioSessionNode(Node):
                 self._log("engine emits live partials; publishing "
                           f"{topics.SENSE_STT_TRANSCRIPT} with is_final=False")
                 return
+
+    def _wire_wake_miss(self) -> None:
+        """Surface speech that was heard but carried no wake phrase.
+
+        Only meaningful when the engine is wake-gated; the rolling
+        methods have no engine-side wake stage and simply never fire it.
+        Same session-then-adapter probe as ``_wire_partials``, for the
+        same reason: the adapter owns the callback and ``AudioSession``
+        may or may not forward the setter."""
+        for target in (self.session, getattr(self.session, "adapter", None)):
+            setter = getattr(target, "set_on_wake_miss", None)
+            if setter is not None:
+                setter(self._publish_wake_miss)
+                return
+
+    def _publish_wake_miss(self, text: str) -> None:
+        """Report a heard-but-unaddressed phrase as a gate decision.
+
+        Without this, "you said nothing" and "you didn't say the wake
+        word" are the same event on the bus — namely no event — so an
+        app cannot tell a dead microphone from a working one that simply
+        wasn't addressed. That is the single most common support
+        question a wake-gated assistant generates.
+
+        It rides ``/sys/gate/decision`` rather than a new topic because
+        it IS a gate decision: a phrase reached the engine and was
+        refused. The reason is distinct (``no_wake``) so an interface
+        can render it differently from an LLM refusal — one means "say
+        the wake word", the other means "I decided you weren't talking
+        to me".
+
+        Runs on the decode thread; must not block."""
+        try:
+            self.publish(topics.GateDecision(
+                accepted=False,
+                text=str(text)[:200],
+                reason="no_wake",
+            ))
+        except Exception:  # noqa: BLE001 — telemetry never kills decode
+            pass
 
     def _publish_partial(self, text: str) -> None:
         """Forward live text as a non-final transcript.
