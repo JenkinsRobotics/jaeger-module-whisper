@@ -1,0 +1,99 @@
+# CI for jaeger-whisper-stt.
+#
+# Scope is deliberate. A runner has no microphone and no 1.5 GB of model
+# weights, so it can never run the audio gates in
+# docs/PRODUCTION_READINESS.md — those stay a human step on the real
+# robot, on the real room. What CI protects is everything BELOW that
+# line: that the package imports, the manifest still resolves through
+# the framework, and the suite that qualifies module logic still exists
+# and still runs.
+#
+# That last clause is not theoretical. The sibling TTS module shipped a
+# release in which a directory rename deleted 92 lines of coverage and
+# left pytest pointed at a path that no longer existed; nothing noticed,
+# because nothing ran.
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The range pyproject declares. Both, because `requires-python`
+        # is a promise and an untested promise is a guess.
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: install
+        # `[bootstrap]` because jaeger-os is not on PyPI and a runner is
+        # exactly the "fresh machine, no framework" case that extra
+        # exists for. The order is not stylistic: requirements.txt opens
+        # with `jaeger-os>=0.10`, pip resolves all-or-nothing, so without
+        # the extra that pin fails and NONE of the engine dependencies
+        # land either — and the error blames the framework.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[bootstrap]"
+          pip install pytest
+
+      - name: dependency contract
+        run: python -m pip check
+
+      - name: pytest
+        # `model` needs ~1.7 GB of weights, `slow` forks processes and
+        # does real I/O. Everything else — the word cursor, the wake
+        # matcher, the registry config, the bus mic contract, the CLI
+        # safety rails, the offline path — is the part that breaks
+        # silently, and it all runs here.
+        run: pytest -q -m "not model and not slow"
+
+      - name: manifest resolves through the framework
+        # The one thing a green unit suite still cannot tell you: that
+        # JaegerOS can FIND this module and bind it to the stt slot.
+        # Discovery goes through an entry point that only exists after a
+        # real install, so it is checkable here and nowhere in the tests.
+        # Also asserts the manifest's declared topics are non-empty —
+        # `consumes: []` was once a lie by omission in this very file.
+        run: |
+          python - <<'PY'
+          from jaeger_os import discover_modules
+          mods = discover_modules()
+          assert "stt" in mods, f"stt slot unclaimed; found {sorted(mods)}"
+          # slot -> LIST of specs; more than one module may claim a slot.
+          spec = next(s for s in mods["stt"]
+                      if s.factory == "jaeger_whisper_stt:make_audio_session_node")
+          assert spec.consumes and spec.produces, "manifest declares no topics"
+          print(f"ok: stt <- {spec.module} {spec.version} ({spec.factory})")
+          PY
+
+      - name: wheel carries module.yaml and no bytecode
+        # module.yaml is not a .py file, so it ships only because
+        # package-data says so — and an editable install masks its
+        # absence by pointing back at the source tree. A module whose
+        # manifest vanished from the wheel installs fine and then never
+        # claims its slot.
+        run: |
+          pip install build
+          python -m build --wheel --outdir dist-check .
+          python - <<'PY'
+          import glob, zipfile
+          names = zipfile.ZipFile(sorted(glob.glob("dist-check/*.whl"))[-1]).namelist()
+          assert any(n.endswith("module.yaml") for n in names), "module.yaml missing"
+          stray = [n for n in names if ".pyc" in n or "__pycache__" in n]
+          assert not stray, f"bytecode in wheel: {stray[:5]}"
+          print(f"ok: {len(names)} members, module.yaml present, no bytecode")
+          PY
