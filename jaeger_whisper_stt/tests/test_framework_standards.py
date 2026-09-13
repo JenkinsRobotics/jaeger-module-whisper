@@ -58,6 +58,13 @@ def test_manifest_validates_against_installed_jaeger_os() -> None:
     assert spec.slot == MANIFEST["slot"]
 
 
+def test_manifest_declares_stable_identity() -> None:
+    assert MANIFEST["id"] == "org.jenkinsrobotics.stt.whisper"
+    assert MANIFEST["name"] == "JaegerWhisperSTT"
+    assert MANIFEST["type"] == "module"
+    assert MANIFEST["implementation"] == "whisper"
+
+
 def test_manifest_factory_resolves() -> None:
     """A factory that does not import is a module that cannot boot."""
     dotted, _, attr = MANIFEST["factory"].partition(":")
