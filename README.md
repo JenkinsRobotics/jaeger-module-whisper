@@ -12,14 +12,18 @@
 
 ---
 
+> **Jaeger ecosystem identity**
+> ID: `org.jenkinsrobotics.stt.whisper` · Type: **module** ·
+> Slot: `stt` · Kind: `engine` · Implementation: `whisper`
+
 ## What it is
 
 JaegerWhisperSTT is an **engine module** — the `stt` slot of the Jaeger
 ecosystem. The module IS the engine: this package owns
 `AudioSessionNode`, the pywhispercpp-backed Whisper engine (six
 recognition methods), its own settings-catalog config slice, and its
-`module.yaml` manifest (module/slot/version/consumes/produces/tools/
-factory) — the seam
+`module.yaml` manifest (stable ID, type, implementation, slot, version,
+topics, tools, and factory) — the seam
 [`discover_modules()`](https://github.com/JenkinsRobotics/JaegerOS/blob/main/jaeger_os/core/modules.py)
 reads to bind a slot to this module at boot.
 
