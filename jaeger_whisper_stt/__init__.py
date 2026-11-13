@@ -55,8 +55,9 @@ from .offline import (
     write_transcripts,
 )
 from .models import ModelStatus, cached_model_path, model_status, prepare_model
+from .hearing import Hearing, open_hearing
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 _ENGINE_EXPORTS = {
     "WhisperSTT": (".engine.two_pass", "WhisperSTTTwoPass"),
@@ -91,6 +92,7 @@ __all__ = [
     "OfflineTranscriber", "TranscriptSegment", "TranscriptionResult",
     "write_transcripts",
     "ModelStatus", "cached_model_path", "model_status", "prepare_model",
+    "Hearing", "open_hearing",
     *_ENGINE_EXPORTS,
 ]
 
